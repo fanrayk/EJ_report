@@ -287,10 +287,7 @@ def main_process():
         print(f"❌ 嚴重錯誤: {e}")
         traceback.print_exc()
         messagebox.showerror("錯誤", f"發生錯誤: {str(e)}")
-    finally:
-        root.destroy()
-        print("\n請按 Enter 鍵結束程式...")
-        input() 
+
 
 if __name__ == '__main__':
     main_process()
