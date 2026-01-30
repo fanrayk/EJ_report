@@ -10,13 +10,13 @@ from docxtpl import DocxTemplate, InlineImage
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
+import traceback
 
 # ============================================================
-# 1. 表格樣式設定 (粗體控制、對齊、邊框)
+# 1. 表格樣式設定 (維持不變：高度3.5、粗體、地址靠左)
 # ============================================================
 
 def set_cell_border(cell):
-    """設置儲存格黑色細邊框"""
     tc = cell._tc
     tcPr = tc.get_or_add_tcPr()
     tcBorders = OxmlElement('w:tcBorders')
@@ -30,46 +30,29 @@ def set_cell_border(cell):
     tcPr.append(tcBorders)
 
 def create_table_structure(doc, table_type='測量照片'):
-    """創建表格結構"""
     table = doc.add_table(rows=7, cols=4)
     table.style = 'Table Grid'
     
-    # 格式化儲存格函式
     def format_cell(cell, text="", font_size=None, bold=False, align=WD_ALIGN_PARAGRAPH.CENTER):
-        # 1. 設定文字
         cell.text = text
         p = cell.paragraphs[0]
-        
-        # 2. 設定水平對齊
         p.alignment = align
-        
-        # 3. 垂直置中
         cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         p.paragraph_format.space_before = Pt(0)
         p.paragraph_format.space_after = Pt(0)
-        
-        # 4. 設定邊框
         set_cell_border(cell)
-        
-        # 5. 設定字體與樣式
         for run in p.runs:
             run.font.name = '標楷體'
             run._element.rPr.rFonts.set(qn('w:eastAsia'), '標楷體')
-            
-            # 指定大小
-            if font_size:
-                run.font.size = font_size
-            
-            # 指定粗體 (True/False)
+            if font_size: run.font.size = font_size
             run.font.bold = bold
 
-    # 第1行：標題區
-    # ▼▼▼ 修改處：標題不加粗 (bold=False)，維持 18 號字 ▼▼▼
+    # 標題
     row1 = table.rows[0].cells
     row1[0].merge(row1[3])
     format_cell(row1[0], '欣中天然氣(股)公司 測量作業項目照片', font_size=Pt(18), bold=False)
 
-    # 第2-3行：資訊區 (全部加粗)
+    # 資訊
     table.rows[1].cells[0].text = '工程案號'
     table.rows[1].cells[1].text = '{{ project_number }}'
     table.rows[1].cells[2].text = '申請書編號'
@@ -82,183 +65,232 @@ def create_table_structure(doc, table_type='測量照片'):
 
     for r in range(1, 3):
         for c in range(4):
-            # 判斷對齊方式 (地址靠左，其他置中)
             target_align = WD_ALIGN_PARAGRAPH.CENTER
-            if r == 2 and c == 1:
+            if r == 2 and c == 1: 
                 target_align = WD_ALIGN_PARAGRAPH.LEFT
-            
-            # ▼▼▼ 修改處：內容全部加粗 (bold=True) ▼▼▼
             format_cell(table.rows[r].cells[c], table.rows[r].cells[c].text, bold=True, align=target_align)
 
-    # 第4行：類型標題 (加粗)
-    # ▼▼▼ 修改處：bold=True ▼▼▼
     format_cell(table.rows[3].cells[0].merge(table.rows[3].cells[3]), table_type, bold=True)
 
-    # 第5-7行：照片區 (加粗，雖然圖片沒粗體，但若有替代文字會加粗)
     if table_type == '測量照片':
         for i, row_idx in enumerate([4, 5, 6]):
             row = table.rows[row_idx]
             row.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
             row.height = Inches(2.4)
-            
             row.cells[0].merge(row.cells[1])
             row.cells[2].merge(row.cells[3])
-            
-            # ▼▼▼ 修改處：bold=True ▼▼▼
             format_cell(row.cells[0], f'{{{{ photo_{i*2+1} }}}}', bold=True)
             format_cell(row.cells[2], f'{{{{ photo_{i*2+2} }}}}', bold=True)
     else:
-        # 點位圖與系統截圖
         for row_idx, tag in [(4, '{{ location_map }}'), (6, '{{ system_screenshot }}')]:
             row = table.rows[row_idx]
             row.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
             row.height = Inches(3.5)
             row.cells[0].merge(row.cells[3])
-            # ▼▼▼ 修改處：bold=True ▼▼▼
             format_cell(row.cells[0], tag, bold=True)
-        
-        # ▼▼▼ 修改處：說明文字加粗 (bold=True) ▼▼▼
         format_cell(table.rows[5].cells[0].merge(table.rows[5].cells[3]), '道挖系統上傳完成截圖', bold=True)
 
     return table
 
 # ============================================================
-# 2. 智慧搜尋檔案功能
+# 2. 輔助功能：在特定資料夾內找 Excel
 # ============================================================
 
-def find_excel_file(selected_folder):
-    """依序搜尋：選定資料夾 -> 上一層 -> 程式目錄"""
-    search_paths = [Path(selected_folder), Path(selected_folder).parent, Path('.')]
-    for path in search_paths:
-        if not path.exists(): continue
-        files = list(path.glob('*.xlsx')) + list(path.glob('*.csv'))
+def find_excel_in_folder(target_folder):
+    """在指定的資料夾(及其子資料夾)內尋找 Excel"""
+    try:
+        # 遞迴搜尋 .xlsx 和 .csv
+        files = list(target_folder.rglob('*.xlsx')) + list(target_folder.rglob('*.csv'))
+        # 排除暫存檔
         valid_files = [f for f in files if not f.name.startswith('~$')]
-        if valid_files: return valid_files[0]
+        
+        if valid_files:
+            return valid_files[0] # 回傳找到的第一個
+    except Exception as e:
+        print(f"[DEBUG] 搜尋 Excel 時發生錯誤: {e}")
     return None
 
 # ============================================================
-# 3. 主程式邏輯
+# 3. 單一案場處理邏輯 (獨立載入 Excel)
 # ============================================================
 
-def process_selected_folder():
-    print(">>> 程式啟動...")
+def process_single_project(project_dir, template_path):
+    print(f"\n[DEBUG] >>> 進入資料夾: {project_dir.name}")
+    
+    # STEP 1: 在「這個資料夾」裡面找 Excel
+    excel_file = find_excel_in_folder(project_dir)
+    
+    if not excel_file:
+        print(f"[DEBUG] ❌ 跳過: 在 {project_dir.name} 裡面找不到 Excel 檔")
+        return False
+    
+    print(f"[DEBUG] 📄 使用 Excel: {excel_file.name}")
+    
+    # STEP 2: 讀取 Excel
+    try:
+        if excel_file.suffix == '.csv':
+            df = pd.read_csv(excel_file)
+        else:
+            df = pd.read_excel(excel_file)
+    except Exception as e:
+        print(f"[DEBUG] ❌ Excel 讀取失敗: {e}")
+        return False
+
+    if df.empty:
+        print(f"[DEBUG] ❌ Excel 是空的")
+        return False
+
+    # 強制轉字串
+    df['工程案號'] = df['工程案號'].astype(str).str.strip()
+    
+    # STEP 3: 決定要用哪一筆資料
+    # 邏輯：如果 Excel 只有一筆資料，就直接用那一筆 (最穩)
+    # 如果有多筆，嘗試用資料夾名稱匹配
+    
+    context = {}
+    final_project_id = ""
+    
+    folder_name = project_dir.name
+    match_row = df[df['工程案號'] == folder_name]
+    
+    if len(df) == 1:
+        # 單筆資料模式 (適用於搶修/568這種)
+        data = df.iloc[0]
+        final_project_id = str(data['工程案號'])
+        print(f"[DEBUG] 📌 Excel 僅有一筆資料，鎖定案號: {final_project_id}")
+    elif not match_row.empty:
+        # 匹配成功
+        data = match_row.iloc[0]
+        final_project_id = str(data['工程案號'])
+        print(f"[DEBUG] 📌 資料夾名稱匹配成功，案號: {final_project_id}")
+    else:
+        # 多筆資料但沒匹配到，預設取第一筆並警告
+        data = df.iloc[0]
+        final_project_id = str(data['工程案號'])
+        print(f"[DEBUG] ⚠️ 無法匹配，預設使用 Excel 第一筆案號: {final_project_id}")
+
+    context = {
+        'project_number': final_project_id,
+        'application_number': str(data['申請書編號']),
+        'construction_address': str(data['施工地址'])
+    }
+
+    # STEP 4: 尋找照片
+    # 優先找: project_dir / final_project_id / 測量照 (例如 搶修/568/測量照)
+    # 其次找: project_dir / 測量照 (例如 06案/測量照)
+    
+    photo_root = project_dir
+    sub_folder_with_id = project_dir / final_project_id
+    
+    if sub_folder_with_id.exists() and sub_folder_with_id.is_dir():
+        photo_root = sub_folder_with_id
+        
+    print(f"[DEBUG] 📂 照片搜尋根目錄: {photo_root}")
+
+    # STEP 5: 載入範本並填充
+    tpl = DocxTemplate(template_path)
+
+    # 測量照
+    photo_dir = photo_root / '測量照'
+    imgs = sorted(list(photo_dir.glob('*.jpg')) + list(photo_dir.glob('*.png'))) if photo_dir.exists() else []
+    print(f"[DEBUG] 📸 找到 {len(imgs)} 張測量照")
+
+    for i in range(1, 7):
+        context[f'photo_{i}'] = InlineImage(tpl, str(imgs[i-1]), width=Inches(3.0)) if (i-1) < len(imgs) else ""
+
+    # 其他圖片
+    def get_single_img(sub, width):
+        d = photo_root / sub
+        f = list(d.glob('*.*')) if d.exists() else []
+        if f: print(f"[DEBUG] 🖼️  找到 {sub}")
+        return InlineImage(tpl, str(f[0]), width=Inches(width)) if f else ""
+
+    context['location_map'] = get_single_img('點位圖', 6.0)
+    context['system_screenshot'] = get_single_img('道管截圖', 6.0)
+
+    # STEP 6: 存檔 (檔名使用 Excel 裡的案號)
+    tpl.render(context)
+    output_filename = f"{final_project_id}_報告書.docx"
+    output_path = project_dir / output_filename
+    tpl.save(output_path)
+    
+    print(f"[DEBUG] ✅ 成功產出: {output_filename}")
+    return True
+
+# ============================================================
+# 4. 主程式流程
+# ============================================================
+
+def main_process():
+    print("="*50)
+    print(">>> 程式啟動 (獨立 Excel 讀取版)")
+    print("="*50)
+    
     root = tk.Tk()
     root.withdraw()
     root.attributes('-topmost', True)
     
     try:
-        # STEP 1: 選擇資料夾
-        print(">>> 請選擇包含照片或 Excel 的資料夾 (例如: 搶修)...")
-        folder_path = filedialog.askdirectory(title="請選擇資料夾", parent=root)
+        # STEP 1: 選擇上層資料夾
+        print(">>> 請選擇「上層資料夾」 (包含多個案場資料夾)...")
+        root_folder_path = filedialog.askdirectory(title="請選擇上層資料夾", parent=root)
         
-        if not folder_path:
-            print("❌ 使用者取消選擇")
+        if not root_folder_path:
             return
         
-        print(f">>> 已選擇資料夾: {folder_path}")
-        project_dir = Path(folder_path)
-        
-        # STEP 2: 自動搜尋 Excel
-        data_file = find_excel_file(folder_path)
-        
-        if data_file:
-            print(f">>> ✅ 成功找到資料檔: {data_file}")
-        else:
-            messagebox.showinfo("提示", "找不到 Excel/CSV，請手動選擇。")
-            file_path = filedialog.askopenfilename(filetypes=[("Excel/CSV", "*.xlsx *.csv")])
-            if not file_path: return
-            data_file = Path(file_path)
+        root_path = Path(root_folder_path)
+        print(f"[DEBUG] 根目錄: {root_path}")
 
-        # STEP 3: 讀取 Excel 並決定案號
-        if data_file.suffix == '.csv':
-            df = pd.read_csv(data_file)
-        else:
-            df = pd.read_excel(data_file)
-            
-        df['工程案號'] = df['工程案號'].astype(str).str.strip()
-        
-        folder_name_as_id = project_dir.name
-        info = df[df['工程案號'] == str(folder_name_as_id)]
-        
-        final_project_id = folder_name_as_id
-        
-        if info.empty:
-            if len(df) == 1:
-                print(f">>> 資料夾名稱 '{folder_name_as_id}' 不在 Excel 中，使用 Excel 內唯一案號。")
-                info = df.iloc[[0]]
-                final_project_id = info.iloc[0]['工程案號']
-                print(f">>> ✅ 確定案號為: {final_project_id}")
-            else:
-                print(f"⚠️  警告: 資料夾名稱 '{folder_name_as_id}' 找不到，且 Excel 有多筆資料，無法自動判斷。")
-                messagebox.showwarning("提醒", f"Excel 中找不到案號 '{folder_name_as_id}'。\n將使用資料夾名稱生成空白報告。")
-                context = {'project_number': folder_name_as_id, 'application_number': '', 'construction_address': ''}
-        
-        if not info.empty:
-            data = info.iloc[0]
-            context = {
-                'project_number': str(data['工程案號']),
-                'application_number': str(data['申請書編號']),
-                'construction_address': str(data['施工地址'])
-            }
-
-        # STEP 4: 決定照片讀取路徑
-        photo_root = project_dir
-        possible_subfolder = project_dir / str(final_project_id)
-        if possible_subfolder.exists() and possible_subfolder.is_dir():
-            print(f">>> 發現案號子資料夾，切換路徑至: {possible_subfolder.name}")
-            photo_root = possible_subfolder
-        
-        print(f">>> 最終照片讀取路徑: {photo_root}")
-
-        # STEP 5: 生成範本與填充
-        # 使用 v8 檔名，確保更新粗體設定
-        template_name = 'report_template.docx' 
+        # STEP 2: 準備 Word 範本
+        template_name = 'report_template.docx'
         if not os.path.exists(template_name):
+            print("[DEBUG] 建立 Word 範本...")
             doc = Document()
             create_table_structure(doc, '測量照片')
             doc.add_page_break()
             create_table_structure(doc, '點位圖')
             doc.save(template_name)
 
-        tpl = DocxTemplate(template_name)
+        # STEP 3: 掃描所有子資料夾
+        # 這裡不先預判是不是案場，而是進去每個資料夾看有沒有 Excel
+        subfolders = [f for f in root_path.iterdir() if f.is_dir()]
         
-        # 讀取測量照
-        photo_dir = photo_root / '測量照'
-        imgs = sorted(list(photo_dir.glob('*.jpg')) + list(photo_dir.glob('*.png'))) if photo_dir.exists() else []
+        if not subfolders:
+            messagebox.showwarning("提示", "選擇的資料夾內沒有任何子資料夾")
+            return
+
+        print(f"\n[DEBUG] 掃描到 {len(subfolders)} 個子資料夾，開始逐一檢查...\n")
         
-        if not imgs:
-            print(f"⚠️  警告: 在 {photo_dir} 找不到任何照片！")
-
-        for i in range(1, 7):
-            if (i-1) < len(imgs):
-                print(f"    - 填入照片 {i}: {imgs[i-1].name}")
-                context[f'photo_{i}'] = InlineImage(tpl, str(imgs[i-1]), width=Inches(3.0))
-            else:
-                context[f'photo_{i}'] = ""
-
-        # 讀取其他照片
-        def get_single_img(sub, width):
-            d = photo_root / sub
-            f = list(d.glob('*.*')) if d.exists() else []
-            return InlineImage(tpl, str(f[0]), width=Inches(width)) if f else ""
-
-        context['location_map'] = get_single_img('點位圖', 6.0)
-        context['system_screenshot'] = get_single_img('道管截圖', 6.0)
-
-        # STEP 6: 存檔
-        tpl.render(context)
-        output_filename = f"{final_project_id}_報告書.docx"
-        output_path = project_dir / output_filename
+        success = 0
+        failed = 0
+        skipped = 0
         
-        tpl.save(output_path)
-        print(f"✅ 成功！報告已儲存: {output_path}")
-        messagebox.showinfo("成功", f"報告書已生成！\n位置: {output_path}")
+        for folder in subfolders:
+            try:
+                # 嘗試處理每個子資料夾
+                if process_single_project(folder, template_name):
+                    success += 1
+                else:
+                    skipped += 1
+            except Exception as e:
+                print(f"[DEBUG] ❌ 處理 {folder.name} 時發生錯誤: {e}")
+                traceback.print_exc()
+                failed += 1
+
+        # STEP 4: 結束
+        print("="*50)
+        msg = f"作業結束！\n\n成功生成: {success} 份\n跳過/無Excel: {skipped} 份\n錯誤: {failed} 份"
+        print(msg)
+        messagebox.showinfo("完成", msg)
 
     except Exception as e:
         print(f"❌ 嚴重錯誤: {e}")
+        traceback.print_exc()
         messagebox.showerror("錯誤", f"發生錯誤: {str(e)}")
     finally:
         root.destroy()
+        print("\n請按 Enter 鍵結束程式...")
+        input() 
 
 if __name__ == '__main__':
-    process_selected_folder()
+    main_process()
