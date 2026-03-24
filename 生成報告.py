@@ -53,7 +53,8 @@ def create_table_structure(doc, table_type='測量照片'):
     format_cell(row1[0], '欣中天然氣(股)公司 測量作業項目照片', font_size=Pt(18), bold=False)
 
     # 資訊
-    table.rows[1].cells[0].text = '工程案號'
+    # 👉 A1 的名稱被綁定在這裡 (只要範本有更新，這裡就會變成變數)
+    table.rows[1].cells[0].text = '{{ project_id_label }}'
     table.rows[1].cells[1].text = '{{ project_number }}'
     table.rows[1].cells[2].text = '申請書編號'
     table.rows[1].cells[3].text = '{{ application_number }}'
@@ -128,10 +129,19 @@ def process_single_project(project_dir, template_path):
     
     # STEP 2: 讀取 Excel
     try:
+        # 👉 確保所有內容都當成純文字讀取 (dtype=str)
+        # 👉 若是 CSV 檔案，使用 utf-8-sig 強制過濾掉 BOM 亂碼
         if excel_file.suffix == '.csv':
-            df = pd.read_csv(excel_file)
+            df = pd.read_csv(excel_file, dtype=str, encoding='utf-8-sig')
         else:
-            df = pd.read_excel(excel_file)
+            df = pd.read_excel(excel_file, dtype=str)
+            
+        # 👉 【最關鍵】不管欄位叫什麼、是什麼型態，一律轉字串、去亂碼、去空白
+        df.columns = df.columns.astype(str).str.replace('\ufeff', '').str.strip()
+        
+        # 👉 取得 A1 的名稱
+        a1_value = df.columns[0]
+        
     except Exception as e:
         print(f"[DEBUG] ❌ Excel 讀取失敗: {e}")
         return False
@@ -140,45 +150,43 @@ def process_single_project(project_dir, template_path):
         print(f"[DEBUG] ❌ Excel 是空的")
         return False
 
-    # 強制轉字串
-    df['工程案號'] = df['工程案號'].astype(str).str.strip()
-    
-    # STEP 3: 決定要用哪一筆資料
-    # 邏輯：如果 Excel 只有一筆資料，就直接用那一筆 (最穩)
-    # 如果有多筆，嘗試用資料夾名稱匹配
-    
-    context = {}
-    final_project_id = ""
-    
+    # 將 A1 對應欄位裡面的內容也去除空白
+    try:
+        df[a1_value] = df[a1_value].astype(str).str.strip()
+    except Exception as e:
+        print(f"[DEBUG] ❌ 找不到指定的欄位 [{a1_value}]，請確認 Excel 格式: {e}")
+        return False
+        
+    # STEP 3: 決定要用哪一筆資料 (取消預設值，直接報錯)
     folder_name = project_dir.name
-    match_row = df[df['工程案號'] == folder_name]
+    match_row = df[df[a1_value] == folder_name]
     
     if len(df) == 1:
-        # 單筆資料模式 (適用於搶修/568這種)
+        # 如果 Excel 只有一筆，就直接用那筆 (搶修情況)
         data = df.iloc[0]
-        final_project_id = str(data['工程案號'])
+        final_project_id = str(data[a1_value])
         print(f"[DEBUG] 📌 Excel 僅有一筆資料，鎖定案號: {final_project_id}")
+        
     elif not match_row.empty:
-        # 匹配成功
+        # 如果有多筆，但有配對到資料夾名稱
         data = match_row.iloc[0]
-        final_project_id = str(data['工程案號'])
+        final_project_id = str(data[a1_value])
         print(f"[DEBUG] 📌 資料夾名稱匹配成功，案號: {final_project_id}")
+        
     else:
-        # 多筆資料但沒匹配到，預設取第一筆並警告
-        data = df.iloc[0]
-        final_project_id = str(data['工程案號'])
-        print(f"[DEBUG] ⚠️ 無法匹配，預設使用 Excel 第一筆案號: {final_project_id}")
+        # 👉 如果有多筆但沒配對到，不再自動抓第一筆，直接報錯並跳過
+        print(f"[DEBUG] ❌ 錯誤：在 Excel 的 [{a1_value}] 欄位中，找不到與資料夾名稱 '{folder_name}' 相符的資料。")
+        return False
 
+    # 👉 將 A1 欄位名稱和資料寫入 context
     context = {
+        'project_id_label': a1_value,
         'project_number': final_project_id,
-        'application_number': str(data['申請書編號']),
-        'construction_address': str(data['施工地址'])
+        'application_number': str(data.get('申請書編號', '')),
+        'construction_address': str(data.get('施工地址', ''))
     }
 
     # STEP 4: 尋找照片
-    # 優先找: project_dir / final_project_id / 測量照 (例如 搶修/568/測量照)
-    # 其次找: project_dir / 測量照 (例如 06案/測量照)
-    
     photo_root = project_dir
     sub_folder_with_id = project_dir / final_project_id
     
@@ -208,7 +216,7 @@ def process_single_project(project_dir, template_path):
     context['location_map'] = get_single_img('點位圖', 6.0)
     context['system_screenshot'] = get_single_img('道管截圖', 6.0)
 
-    # STEP 6: 存檔 (檔名使用 Excel 裡的案號)
+    # STEP 6: 存檔 (檔名使用最終案號)
     tpl.render(context)
     output_filename = f"{final_project_id}_報告書.docx"
     output_path = project_dir / output_filename
@@ -243,16 +251,17 @@ def main_process():
 
         # STEP 2: 準備 Word 範本
         template_name = 'report_template.docx'
-        if not os.path.exists(template_name):
-            print("[DEBUG] 建立 Word 範本...")
-            doc = Document()
-            create_table_structure(doc, '測量照片')
-            doc.add_page_break()
-            create_table_structure(doc, '點位圖')
-            doc.save(template_name)
+        
+        # 👉 【修正陷阱】直接把 if not os.path.exists() 拔掉！
+        # 讓程式每一次執行都強制重新建立一份含有 {{ project_id_label }} 的乾淨範本
+        print("[DEBUG] 建立全新 Word 範本...")
+        doc = Document()
+        create_table_structure(doc, '測量照片')
+        doc.add_page_break()
+        create_table_structure(doc, '點位圖')
+        doc.save(template_name)
 
         # STEP 3: 掃描所有子資料夾
-        # 這裡不先預判是不是案場，而是進去每個資料夾看有沒有 Excel
         subfolders = [f for f in root_path.iterdir() if f.is_dir()]
         
         if not subfolders:
@@ -279,7 +288,7 @@ def main_process():
 
         # STEP 4: 結束
         print("="*50)
-        msg = f"作業結束！\n\n成功生成: {success} 份\n跳過/無Excel: {skipped} 份\n錯誤: {failed} 份"
+        msg = f"作業結束！\n\n成功生成: {success} 份\n跳過/配對失敗: {skipped} 份\n錯誤: {failed} 份"
         print(msg)
         messagebox.showinfo("完成", msg)
 
@@ -287,7 +296,6 @@ def main_process():
         print(f"❌ 嚴重錯誤: {e}")
         traceback.print_exc()
         messagebox.showerror("錯誤", f"發生錯誤: {str(e)}")
-
 
 if __name__ == '__main__':
     main_process()
